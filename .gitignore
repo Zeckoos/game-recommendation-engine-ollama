@@ -1,0 +1,58 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+.venv/
+*.sqlite3
+instance/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.cache/
+coverage/
+htmlcov/
+
+# === FastAPI / Uvicorn ===
+*.log
+
+# === Node / React ===
+node_modules/
+dist/
+build/
+.npm/
+.yarn/
+.pnp.*
+.next/
+out/
+
+# === Environment & Config ===
+.venv
+.env
+.env.local
+.env.*.local
+*.env
+.envrc
+
+# === IDE / Editors ===
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+
+# === Docker ===
+*.pid
+docker-compose.override.yml
+
+# === Misc ===
+*.bak
+*.tmp
