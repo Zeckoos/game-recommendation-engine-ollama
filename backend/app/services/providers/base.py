@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import Any, List, Dict
 
+from backend.app.models.game_info import GameInfo
+
+
 class GameProvider(ABC):
     @abstractmethod
-    async def search_games(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def search_games(self, filters: Dict) -> List[GameInfo]:
         """Search games by filters (tags, platforms, price, etc.)"""
         pass
 
