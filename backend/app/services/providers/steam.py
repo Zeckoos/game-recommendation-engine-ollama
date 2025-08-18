@@ -1,61 +1,56 @@
 import asyncio
 
 import httpx
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from backend.app.models.game_info import GameInfo
 from .base import GameProvider
+from ...models.provider_response import ProviderResponse
 
 
-def parse_price(details_data: dict) -> float | None:
+def parse_price(details_data: dict) -> Optional[float]:
+    """Extract price from Steam API data, return 0.0 for free games."""
     price_info = details_data.get("price_overview")
+
     if price_info and "final" in price_info:
-        return price_info["final"] / 100  # convert cents to dollars
+        return price_info["final"] / 100  # cents → dollars
+
     if details_data.get("is_free"):
         return 0.0
-    return None
 
+    return None
 
 class SteamProvider(GameProvider):
     BASE_SEARCH_URL = "https://store.steampowered.com/api/storesearch"
     BASE_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
 
-    async def search_games(self, query: str) -> List[GameInfo]:
-        results: List[GameInfo] = []
-
+    async def search_games(self, query: str) -> ProviderResponse:
+        """Search Steam store by query and return ProviderResponse."""
         async with httpx.AsyncClient() as client:
             try:
-                # Step 1: Search Steam store
-                search_resp = await client.get(
-                    self.BASE_SEARCH_URL,
-                    params={"term": query, "cc": "us", "l": "en"}
-                )
+                resp = await client.get(self.BASE_SEARCH_URL, params={"term": query, "cc": "us", "l": "en"})
+                resp.raise_for_status()
+                items = resp.json().get("items", [])
+            except httpx.HTTPError:
+                items = []
 
-                search_resp.raise_for_status()
-                search_data = search_resp.json().get("items", [])
-
-            except httpx.HTTPError as e:
-                print(f"Steam search error: {e}")
-                return results
-
-        # Step 2: Fetch details concurrently
+        # Fetch detailed info concurrently for all results
         async def fetch_details(app_id: str) -> Optional[GameInfo]:
             try:
                 return await self.get_game_details(app_id)
-            except httpx.HTTPError as e:
-                print(f"Error fetching Steam details for {app_id}: {e}")
+            except httpx.HTTPError:
                 return None
 
-        tasks = [fetch_details(str(item.get("id"))) for item in search_data if item.get("id")]
-        detailed_results = await asyncio.gather(*tasks)
-        results.extend([g for g in detailed_results if g])
-        return results
+        tasks = [fetch_details(str(item.get("id"))) for item in items if item.get("id")]
+        results_list = await asyncio.gather(*tasks)
+
+        # Filter out failed fetches
+        results = tuple(g for g in results_list if g)
+        return ProviderResponse(results=results, total=len(results))
 
     async def get_game_details(self, app_id: str) -> Optional[GameInfo]:
+        """Fetch detailed game info and convert to GameInfo."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                self.BASE_APP_DETAILS_URL,
-                params={"appids": app_id, "cc": "us", "l": "en"}
-            )
+            resp = await client.get(self.BASE_APP_DETAILS_URL, params={"appids": app_id, "cc": "us", "l": "en"})
             resp.raise_for_status()
             data = resp.json().get(str(app_id), {}).get("data", {})
 
@@ -67,35 +62,35 @@ class SteamProvider(GameProvider):
             name=data.get("name"),
             description=data.get("short_description"),
             release_date=data.get("release_date", {}).get("date"),
-            developers=data.get("developers", []),
-            publishers=data.get("publishers", []),
-            genres=[g.get("description") for g in data.get("genres", [])],
-            platforms=[k for k, v in data.get("platforms", {}).items() if v],
-            screenshots=[sc.get("path_full") for sc in data.get("screenshots", [])],
+            developers=tuple(data.get("developers", [])) or tuple(),
+            publishers=tuple(data.get("publishers", [])) or tuple(),
+            genres=tuple(g.get("description") for g in data.get("genres", [])) or tuple(),
+            platforms=tuple(k for k, v in data.get("platforms", {}).items() if v) or tuple(),
+            screenshots=tuple(sc.get("path_full") for sc in data.get("screenshots", [])) or tuple(),
             price=parse_price(data),
             store_url=f"https://store.steampowered.com/app/{app_id}"
         )
 
-    async def get_game_price(self, game_id: str, currency: str) -> Dict[str, Any]:
-        return {}
+    async def get_game_price(self, game_id: str, currency: str) -> Any:
+        pass
 
-    async def get_game_screenshots(self, game_id: str) -> List[str]:
-        return []
+    async def get_game_screenshots(self, game_id: str) -> tuple[str, ...]:
+        pass
 
-    async def get_trending_games(self, limit: int = 10) -> List[Dict[str, Any]]:
-        return []
+    async def get_trending_games(self, limit: int = 10) -> ProviderResponse:
+        pass
 
-    async def get_recommendations(self, seed_game_id: str) -> List[Dict[str, Any]]:
-        return []
+    async def get_recommendations(self, seed_game_id: str) -> ProviderResponse:
+        pass
 
     async def check_health(self) -> bool:
-        return True
+        pass
 
     async def supports_feature(self, feature: str) -> bool:
-        return feature in ["search", "details", "price", "screenshots", "trending", "recommendations", "autocomplete"]
+        pass
 
-    async def autocomplete(self, query: str) -> List[str]:
-        return []
+    async def autocomplete(self, query: str) -> tuple[str, ...]:
+        pass
 
-    async def raw_provider_data(self, game_id: str) -> Dict[str, Any]:
-        return {}
+    async def raw_provider_data(self, game_id: str) -> Any:
+        pass

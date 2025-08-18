@@ -1,41 +1,29 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
 from datetime import date
+from enum import Enum
+from typing import List, Optional
+from pydantic import BaseModel, Field, confloat
+
+class Currency(str, Enum):
+    USD = "USD"
+    EUR = "EUR"
+    AUD = "AUD"
 
 class GameFilter(BaseModel):
-    query: Optional[str] = None
-    min_price: Optional[float] = None
-    max_price: Optional[float] = None
-    currency: Optional[str] = "USD"
-    platforms: List[str] = Field(default_factory=list)
-    tags: List[str] = Field(default_factory=list)
+    query: Optional[str] = ""
+    min_price: Optional[confloat(ge=0)] = 0.0
+    max_price: Optional[confloat(ge=0)] = float("inf")
+    currency: Currency = Currency.USD
+
+    platforms: Optional[List[str]] = Field(default_factory=list)
+    genres: Optional[List[str]] = Field(default_factory=list)
+    tags: Optional[List[str]] = Field(default_factory=list)
+
     release_date_from: Optional[date] = None
     release_date_to: Optional[date] = None
 
-    @field_validator("release_date_from", "release_date_to", mode="before")
-    @classmethod
-    def empty_str_to_none(cls, v):
-        # Convert empty strings to None for optional dates
-        if v == "" or v is None:
-            return None
-        return v
-
-    @field_validator("tags", "platforms", mode="before")
-    @classmethod
-    def normalize_list(cls, v):
-        # Remove empty strings, strip whitespace, convert to lowercase
-        if not v:
-            return []
-        return sorted({t.strip().lower() for t in v if t})
-
-    @field_validator("min_price", "max_price")
-    def non_negative(cls, v):
-        if v < 0:
-            raise ValueError("Price cannot be negative")
-        return v
-
-    @field_validator("max_price")
-    def max_ge_min(cls, v, info):
-        if "min_price" in info.data and v < info.data["min_price"]:
-            raise ValueError("max_price cannot be less than min_price")
-        return v
+    class Config:
+        use_enum_values = True       # serialize enum to its value
+        allow_population_by_field_name = True
+        validate_assignment = True   # ensures updates are validated
+        anystr_strip_whitespace = True
+        extra = "forbid"             # disallow unknown fields
