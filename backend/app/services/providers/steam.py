@@ -5,19 +5,7 @@ from typing import Any, Optional
 from backend.app.models.game_info import GameInfo
 from .base import GameProvider
 from ...models.provider_response import ProviderResponse
-
-
-def parse_price(details_data: dict) -> Optional[float]:
-    """Extract price from Steam API data, return 0.0 for free games."""
-    price_info = details_data.get("price_overview")
-
-    if price_info and "final" in price_info:
-        return price_info["final"] / 100  # cents → dollars
-
-    if details_data.get("is_free"):
-        return 0.0
-
-    return None
+from backend.app.services.providers.helpers import parse_release_date,parse_price
 
 class SteamProvider(GameProvider):
     BASE_SEARCH_URL = "https://store.steampowered.com/api/storesearch"
@@ -61,7 +49,7 @@ class SteamProvider(GameProvider):
             id=str(app_id),
             name=data.get("name"),
             description=data.get("short_description"),
-            release_date=data.get("release_date", {}).get("date"),
+            release_date=parse_release_date(data.get("release_date", {}).get("date")),
             developers=tuple(data.get("developers", [])) or tuple(),
             publishers=tuple(data.get("publishers", [])) or tuple(),
             genres=tuple(g.get("description") for g in data.get("genres", [])) or tuple(),

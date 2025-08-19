@@ -23,7 +23,7 @@ class GameFilter(BaseModel):
 
     class Config:
         use_enum_values = True       # serialize enum to its value
-        allow_population_by_field_name = True
+        populate_by_name = True
         validate_assignment = True   # ensures updates are validated
-        anystr_strip_whitespace = True
+        str_strip_whitespace = True
         extra = "forbid"             # disallow unknown fields

@@ -1,15 +1,37 @@
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from dotenv import load_dotenv
+from backend.app.utils.rawg_metadata_cache import RAWGMetadataCache
+from backend.app.api.steam import router as steam_router
+from backend.app.api.game_recommend import router as recommend_router
+from backend.app.services.aggregator import GameAggregator
+
 load_dotenv()
 
-from fastapi import FastAPI
-from backend.app.api.steam import router as steam_router  # temporary Steam test endpoint
-from backend.app.api.game_recommend import router as recommend_router
+# Initialise cache outside lifespan so it's accessible globally if needed
+cache = RAWGMetadataCache()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup logic ---
+    await cache.load_from_disk()  # prefetch RAWG metadata
+    print("RAWG cache loaded")
+
+    # Initialise aggregator and attach to app.state
+    app.state.aggregator = await GameAggregator.create() # type: ignore[attr-defined]
+    print("Aggregator initialised")
+
+    yield  # main app runs here
+
+    # --- Cleanup on shutdown ---
+    await cache.save_to_disk()
+    print("RAWG cache saved on shutdown")
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Game Recommendation Engine - Backend")
+    app = FastAPI(title="Game Recommendation Engine", lifespan=lifespan)
 
     # Routers
-    app.include_router(steam_router, prefix="/steam", tags=["steam"])  # test Steam search
+    app.include_router(steam_router, prefix="/steam", tags=["steam"])
     app.include_router(recommend_router, prefix="/recommend", tags=["recommend"])
 
     return app

@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Query
-from typing import List
+from backend.app.models.provider_response import ProviderResponse
 from backend.app.services.providers.steam import SteamProvider
-from backend.app.models.game_info import GameInfo
 
 router = APIRouter()
 
 
-@router.get("/search", response_model=List[GameInfo])
+@router.get("/search", response_model=ProviderResponse)
 async def search_steam(query: str = Query(..., min_length=1, description="Search term for Steam games")):
     """
     Temporary endpoint to test Steam search.

@@ -3,6 +3,7 @@ from typing import Tuple
 from .game_info import GameInfo
 
 class ProviderResponse(BaseModel):
+    """Wrapper Class for provider response"""
     results: Tuple[GameInfo, ...] = Field(default_factory=tuple)
     total: int = 0
 
