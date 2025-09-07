@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from backend.app.models.game_filter import GameFilter
-from backend.app.models.game_info import GameInfo
-from backend.app.models.provider_response import ProviderResponse
+from ...models.game_filter import GameFilter
+from ...models.game_info import GameInfo
+from ...models.provider_response import ProviderResponse
 
 
 class GameProvider(ABC):

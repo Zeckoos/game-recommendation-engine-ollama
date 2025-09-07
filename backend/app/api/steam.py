@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
-from backend.app.models.provider_response import ProviderResponse
-from backend.app.services.providers.steam import SteamProvider
+from ..models.provider_response import ProviderResponse
+from ..services.providers.steam import SteamProvider
 
 router = APIRouter()
 

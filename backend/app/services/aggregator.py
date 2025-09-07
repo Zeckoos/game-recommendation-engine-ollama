@@ -1,9 +1,9 @@
 from difflib import get_close_matches
-from backend.app.models.game_filter import GameFilter
-from backend.app.models.game_info import GameInfo
-from backend.app.models.provider_response import ProviderResponse
-from backend.app.services.providers.rawg import RAWGProvider
-from backend.app.services.providers.steam import SteamProvider
+from ..models.game_filter import GameFilter
+from ..models.game_info import GameInfo
+from ..models.provider_response import ProviderResponse
+from .providers.rawg import RAWGProvider
+from .providers.steam import SteamProvider
 import asyncio, httpx, logging
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class GameAggregator:
         steam = SteamProvider()
         return cls(rawg=rawg, steam=steam)
 
-    async def aggregate(self, filters: GameFilter, limit: int = 15, page: int = 1) -> ProviderResponse:
+    async def aggregate(self, filters: GameFilter, limit: int = 10, page: int = 1) -> ProviderResponse:
         """
         Fetch games from RAWG, enrich via Steam, and apply price filtering.
         Supports pagination via `page` and `limit`.
@@ -39,16 +39,41 @@ class GameAggregator:
             try:
                 steam_resp: ProviderResponse = await self.steam.search_games(game.name)
                 if not steam_resp.results:
+                    logger.debug("No Steam results found for RAWG game '%s'", game.name)
                     return game
 
-                # Fuzzy match the closest Steam game
-                match_name = get_close_matches(game.name, [s.name for s in steam_resp.results], n=1)
+                # Normalise names for fuzzy matching
+                rawg_name = game.name.strip().lower()
+                steam_names = [s.name.strip().lower() for s in steam_resp.results]
+
+                match_name = get_close_matches(
+                    rawg_name,
+                    steam_names,
+                    n=1,
+                    cutoff=0.6
+                )
+
                 if not match_name:
+                    logger.debug("No fuzzy Steam match for RAWG game '%s'", game.name)
                     return game
 
-                steam_game = next((s for s in steam_resp.results if s.name == match_name[0]), None)
+                steam_game = next(
+                    (s for s in steam_resp.results if s.name.strip().lower() == match_name[0]),
+                    None
+                )
+
                 if not steam_game:
+                    logger.debug("Fuzzy matched name but Steam game not found for RAWG '%s'", game.name)
                     return game
+
+                logger.debug(
+                    "Enriching RAWG '%s' with Steam '%s' (appid=%s, price=%s, url=%s)",
+                    game.name,
+                    steam_game.name,
+                    steam_game.id,
+                    steam_game.price,
+                    steam_game.store_url
+                )
 
                 # Merge fields (prefer Steam if available)
                 game.name = steam_game.name or game.name

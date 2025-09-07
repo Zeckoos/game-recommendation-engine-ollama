@@ -1,10 +1,10 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from dotenv import load_dotenv
-from backend.app.utils.rawg_metadata_cache import RAWGMetadataCache
-from backend.app.api.steam import router as steam_router
-from backend.app.api.game_recommend import router as recommend_router
-from backend.app.services.aggregator import GameAggregator
+from .utils.rawg_metadata_cache import RAWGMetadataCache
+from .api.steam import router as steam_router
+from .api.game_recommend import router as recommend_router
+from .services.aggregator import GameAggregator
 
 load_dotenv()
 

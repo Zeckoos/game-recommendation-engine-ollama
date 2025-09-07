@@ -1,11 +1,11 @@
-import asyncio
-
-import httpx
+import asyncio, httpx, logging
 from typing import Any, Optional
-from backend.app.models.game_info import GameInfo
+from ...models.game_info import GameInfo
 from .base import GameProvider
 from ...models.provider_response import ProviderResponse
-from backend.app.services.providers.helpers import parse_release_date,parse_price
+from ...utils.providers_helpers import parse_release_date,parse_price
+
+logger = logging.getLogger(__name__)
 
 class SteamProvider(GameProvider):
     BASE_SEARCH_URL = "https://store.steampowered.com/api/storesearch"
@@ -21,7 +21,6 @@ class SteamProvider(GameProvider):
             except httpx.HTTPError:
                 items = []
 
-        # Fetch detailed info concurrently for all results
         async def fetch_details(app_id: str) -> Optional[GameInfo]:
             try:
                 return await self.get_game_details(app_id)
@@ -30,9 +29,8 @@ class SteamProvider(GameProvider):
 
         tasks = [fetch_details(str(item.get("id"))) for item in items if item.get("id")]
         results_list = await asyncio.gather(*tasks)
-
-        # Filter out failed fetches
         results = tuple(g for g in results_list if g)
+
         return ProviderResponse(results=results, total=len(results))
 
     async def get_game_details(self, app_id: str) -> Optional[GameInfo]:
@@ -43,6 +41,11 @@ class SteamProvider(GameProvider):
             data = resp.json().get(str(app_id), {}).get("data", {})
 
         if not data:
+            logger.debug("Steam app %s has no data.", app_id)
+            return None
+
+        if data.get("type") != "game":
+            logger.debug("Steam app %s skipped (type=%s).", app_id, data.get("type"))
             return None
 
         return GameInfo(

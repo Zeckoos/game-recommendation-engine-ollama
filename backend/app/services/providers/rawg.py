@@ -3,14 +3,14 @@ import time
 
 from dotenv import load_dotenv
 
-from backend.app.services.providers.helpers import parse_rawg_game
-from backend.app.utils.rawg_metadata_cache import RAWGMetadataCache
+from ...utils.providers_helpers import parse_rawg_game, resolve_filters
+from ...utils.rawg_metadata_cache import RAWGMetadataCache
 import asyncio, os, httpx
 from typing import Any, Optional
-from backend.app.models.game_filter import GameFilter
-from backend.app.models.game_info import GameInfo
-from backend.app.models.provider_response import ProviderResponse
-from backend.app.services.providers.base import GameProvider
+from ...models.game_filter import GameFilter
+from ...models.game_info import GameInfo
+from ...models.provider_response import ProviderResponse
+from .base import GameProvider
 
 load_dotenv()
 
@@ -39,14 +39,20 @@ async def _fetch_rawg_page(params: dict, metadata_cache: RAWGMetadataCache) -> P
     async def fetch_details(game_id: str) -> GameInfo:
         url = f"{BASE_URL}/{game_id}"
         async with httpx.AsyncClient() as detail_client:
-            logger.debug("Fetching details for game ID: %s", game_id)
             detail_resp = await detail_client.get(url, params={"key": RAWG_API_KEY})
             detail_resp.raise_for_status()
             game_info = parse_rawg_game(detail_resp.json(), metadata_cache)
-            # logger.debug(
-            #     "Fetched game details: ID=%s, Name=%s, Genres=%s, Platforms=%s, URL=%s",
-            #     game_info.id, game_info.name, game_info.genres, game_info.platforms, game_info.store_url
-            # )
+
+            # Log unresolved IDs per game
+            unknown_genres = [g for g in game_info.genres if g not in metadata_cache.genre_map.values()]
+            unknown_platforms = [p for p in game_info.platforms if p not in metadata_cache.platform_map.values()]
+            unknown_tags = []  # Can be added if you parse tags per game
+            if unknown_genres or unknown_platforms or unknown_tags:
+                logger.warning(
+                    "Game ID %s has unresolved IDs → genres: %s, platforms: %s, tags: %s",
+                    game_id, unknown_genres, unknown_platforms, unknown_tags
+                )
+
             return game_info
 
     tasks = [fetch_details(str(game["id"])) for game in data.get("results", [])]
@@ -63,7 +69,7 @@ class RAWGProvider(GameProvider):
     """RAWG API provider with eager pre-fetch metadata and async support."""
 
     def __init__(self):
-        self.metadata_cache = None
+        self.metadata_cache: RAWGMetadataCache | None = None
 
     @classmethod
     async def create(cls):
@@ -79,7 +85,7 @@ class RAWGProvider(GameProvider):
         )
         return self
 
-    async def search_games(self, filters: GameFilter, total_limit: int = 15, offset: int = 0) -> ProviderResponse:
+    async def search_games(self, filters: GameFilter, total_limit: int = 10, offset: int = 0) -> ProviderResponse:
         """
         Search games using RAWG API, resolving filter names to IDs
         via metadata cache with support for pagination.
@@ -90,30 +96,20 @@ class RAWGProvider(GameProvider):
         end_page = (offset + total_limit + page_size - 1) // page_size
         tasks = []
 
-        # Build dicts for fast name → ID lookup
-        genre_dict = {name.lower(): id for id, name in self.metadata_cache.genres}
-        platform_dict = {name.lower(): id for id, name in self.metadata_cache.platforms}
-        tag_dict = {name.lower(): id for id, name in self.metadata_cache.tags}
+        # Resolve filters with centralized helper
+        resolved_ids, still_missing = await resolve_filters(
+            self.metadata_cache,
+            {"genres": filters.genres, "platforms": filters.platforms, "tags": filters.tags}
+        )
 
-        # Resolve filters
-        genre_ids = [genre_dict[g.lower()] for g in filters.genres if g.lower() in genre_dict]
-        platform_ids = [platform_dict[p.lower()] for p in filters.platforms if p.lower() in platform_dict]
-        tag_ids = [tag_dict[t.lower()] for t in filters.tags if t.lower() in tag_dict]
+        # Log unresolved filters
+        for key, missing in still_missing.items():
+            if missing:
+                logger.warning("Unknown %s skipped: %s", key, missing)
 
-        # Log missing filters
-        missing_genres = set(filters.genres) - set(genre_dict.keys())
-        missing_platforms = set(filters.platforms) - set(platform_dict.keys())
-        missing_tags = set(filters.tags) - set(tag_dict.keys())
-
-        if missing_genres:
-            logger.warning("Unknown genres skipped: %s", missing_genres)
-        if missing_platforms:
-            logger.warning("Unknown platforms skipped: %s", missing_platforms)
-        if missing_tags:
-            logger.warning("Unknown tags skipped: %s", missing_tags)
-
-        logger.debug("Resolved filters → genres=%s, platforms=%s, tags=%s",
-                     genre_ids, platform_ids, tag_ids)
+        genre_ids = resolved_ids["genres"]
+        platform_ids = resolved_ids["platforms"]
+        tag_ids = resolved_ids["tags"]
 
         # Build query params for each page
         for page in range(start_page, end_page + 1):
@@ -128,7 +124,7 @@ class RAWGProvider(GameProvider):
                 "genres": ",".join(map(str, genre_ids)) if genre_ids else None,
                 "tags": ",".join(map(str, tag_ids)) if tag_ids else None,
             }
-            logger.debug("RAWG request params (page %d): %s", page, params)
+            #logger.debug("RAWG request params (page %d): %s", page, params)
             tasks.append(_fetch_rawg_page(params, self.metadata_cache))
 
         pages_results = await asyncio.gather(*tasks)
@@ -152,7 +148,7 @@ class RAWGProvider(GameProvider):
             data = resp.json()
 
         logger.debug("Fetched game details for ID %s", game_id)
-        return parse_rawg_game(data)
+        return parse_rawg_game(data, self.metadata_cache)
 
     async def get_game_price(self, game_id: str, currency: str) -> Any:
         pass
