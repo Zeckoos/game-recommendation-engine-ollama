@@ -22,7 +22,7 @@ class GameFilter(BaseModel):
     release_date_to: Optional[date] = None
 
     class Config:
-        use_enum_values = True       # serialize enum to its value
+        use_enum_values = True       # serialise enum to its value
         populate_by_name = True
         validate_assignment = True   # ensures updates are validated
         str_strip_whitespace = True

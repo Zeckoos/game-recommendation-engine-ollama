@@ -17,6 +17,9 @@ async def lifespan(app: FastAPI):
     await cache.load_from_disk()  # prefetch RAWG metadata
     print("RAWG cache loaded")
 
+    # Attach cache to app.state so NLQueryParser can access it
+    app.state.rawg_metadata_cache = cache
+
     # Initialise aggregator and attach to app.state
     app.state.aggregator = await GameAggregator.create() # type: ignore[attr-defined]
     print("Aggregator initialised")
