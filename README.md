@@ -4,9 +4,10 @@ This project is a game recommendation engine integrated with a local **Ollama3:8
 
 ## Current Features
 <ul>
-  <li>Parse input into JSON format with a local Ollama model (Currently not very accurate/stable)</li>
+  <li>Parse input into JSON format with the LLM <del>(Currently not very accurate/stable)</del></li>
   <li>Search for close/fuzzy matching games on RAWG</li>
   <li>Enrich game's information through Steam</li>
-  <li>Match similar/custom genres/tags with RAWG's when possible</li>
-  <li>Pre-fetch RAWG's "slugs" or IDs used for genres, platforms and tags, save as cache and load when available</li>                                                  
+  <li>Match similar/custom genres/tags with RAWG's when possible using the LLM</li>
+  <li>Pre-fetch RAWG's "slugs" or IDs used for genres, platforms and tags, save as cache and load when available</li>
+  <li>Save as cache to disk for the custom mappings generated through the LLM</li>
 </ul>
