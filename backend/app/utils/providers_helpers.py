@@ -1,59 +1,51 @@
-from datetime import datetime, date
-from typing import Optional
+from datetime import date
+from typing import Any
+from .nl_parser_helpers import resolve_with_llm
 from ..models.game_info import GameInfo
-from .rawg_metadata_cache import RAWGMetadataCache
+from ..caches.rawg_metadata_cache import RAWGMetadataCache
+from ..caches.rawg_cache_mapping import LLMCacheMapper
 import logging
 
 logger = logging.getLogger(__name__)
 
-async def resolve_filters(metadata_cache: RAWGMetadataCache, filters: dict):
+async def resolve_filters(metadata_cache: RAWGMetadataCache, filters: dict, llm_cache: LLMCacheMapper):
     """
-    Resolve filter names → IDs.
-    Refresh metadata once per session if unknown filters exist.
+    Resolve filter names → IDs using RAWG metadata, with LLM mapping fallback.
     Returns: (resolved_ids_dict, still_missing_dict)
     """
-    # Initial name → ID dicts
+    # Build initial name → ID dicts
     genre_dict = {name.lower(): id for id, name in metadata_cache.genres}
     platform_dict = {name.lower(): id for id, name in metadata_cache.platforms}
     tag_dict = {name.lower(): id for id, name in metadata_cache.tags}
 
-    # Attempt initial resolution
-    missing_genres = set(filters.get("genres", [])) - set(name.lower() for name in genre_dict.keys())
-    missing_platforms = set(filters.get("platforms", [])) - set(name.lower() for name in platform_dict.keys())
-    missing_tags = set(filters.get("tags", [])) - set(name.lower() for name in tag_dict.keys())
+    async def resolve_category(category: str, values: list[str], source_dict: dict[str, Any]):
+        # Use the shared LLM + metadata helper
+        resolved_names, leftovers = await resolve_with_llm(values, metadata_cache, llm_cache, category)
+        resolved_ids = [source_dict[name.lower()] for name in resolved_names if name.lower() in source_dict]
+        return resolved_ids, leftovers
 
-    # Refresh metadata once if needed
-    if (missing_genres or missing_platforms or missing_tags) and not metadata_cache._session_refreshed:
-        logger.debug("Refreshing RAWG metadata due to unknown filters")
-        await metadata_cache.refresh_if_needed()
-        # Rebuild dicts after refresh
-        genre_dict = {name.lower(): id for id, name in metadata_cache.genres}
-        platform_dict = {name.lower(): id for id, name in metadata_cache.platforms}
-        tag_dict = {name.lower(): id for id, name in metadata_cache.tags}
+    genre_ids, missing_genres = await resolve_category("genres", filters.get("genres", []), genre_dict)
+    platform_ids, missing_platforms = await resolve_category("platforms", filters.get("platforms", []), platform_dict)
+    tag_ids, missing_tags = await resolve_category("tags", filters.get("tags", []), tag_dict)
 
-    # Resolve again
-    genre_ids = [genre_dict[g.lower()] for g in filters.get("genres", []) if g.lower() in genre_dict]
-    platform_ids = [platform_dict[p.lower()] for p in filters.get("platforms", []) if p.lower() in platform_dict]
-    tag_ids = [tag_dict[t.lower()] for t in filters.get("tags", []) if t.lower() in tag_dict]
-
-    # Identify still missing filters
-    still_missing_genres = set(filters.get("genres", [])) - set(name.lower() for name in genre_dict.keys())
-    still_missing_platforms = set(filters.get("platforms", [])) - set(name.lower() for name in platform_dict.keys())
-    still_missing_tags = set(filters.get("tags", [])) - set(name.lower() for name in tag_dict.keys())
+    # Log any unresolved filters
+    if missing_genres:
+        logger.warning("Unresolved genres skipped: %s", missing_genres)
+    if missing_platforms:
+        logger.warning("Unresolved platforms skipped: %s", missing_platforms)
+    if missing_tags:
+        logger.warning("Unresolved tags skipped: %s", missing_tags)
 
     return (
         {"genres": genre_ids, "platforms": platform_ids, "tags": tag_ids},
-        {"genres": still_missing_genres, "platforms": still_missing_platforms, "tags": still_missing_tags}
+        {"genres": missing_genres, "platforms": missing_platforms, "tags": missing_tags}
     )
 
 def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
     """Convert RAWG API game JSON into GameInfo, resolving IDs to names where possible."""
-
-    # Build lookup dicts once from cache
     genre_dict = {str(id): name for id, name in metadata_cache.genres}
     platform_dict = {str(id): name for id, name in metadata_cache.platforms}
 
-    # Resolve genres: prefer names, fallback to IDs as string
     genres = []
     for g in data.get("genres", []):
         if isinstance(g, dict) and "name" in g:
@@ -61,7 +53,6 @@ def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
         elif isinstance(g, (str, int)):
             genres.append(genre_dict.get(str(g), str(g)))
 
-    # Resolve platforms: prefer names, fallback to IDs as string
     platforms = []
     for p in data.get("platforms", []):
         if isinstance(p, dict) and "platform" in p and "name" in p["platform"]:
@@ -71,11 +62,13 @@ def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
 
     screenshots = tuple(s.get("image") for s in data.get("short_screenshots", []) if s.get("image"))
 
+    release_date = parse_release_date(data.get("released"))
+
     return GameInfo(
         id=str(data.get("id")),
         name=data.get("name", "Unknown"),
         description=data.get("description_raw") or data.get("description"),
-        release_date=data.get("released"),
+        release_date=release_date,
         developers=tuple(d.get("name") for d in data.get("developers", []) if "name" in d),
         publishers=tuple(p.get("name") for p in data.get("publishers", []) if "name" in p),
         genres=tuple(genres),
@@ -85,25 +78,22 @@ def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
         store_url=f"https://rawg.io/games/{data.get('slug')}" if data.get("slug") else None,
     )
 
-def parse_release_date(steam_date: Optional[str]) -> Optional[date]:
-    """Parse Steam's release date string into a date object."""
-    if not steam_date:
+
+def parse_release_date(raw_date: str | None) -> date | None:
+    """Parse RAWG release date string into date object (YYYY-MM-DD)."""
+    if not raw_date:
         return None
-    for fmt in ("%b %d, %Y", "%d %b, %Y"):  # Steam varies formats
-        try:
-            return datetime.strptime(steam_date, fmt).date()
-        except ValueError:
-            continue
-    return None
+    try:
+        return date.fromisoformat(raw_date)
+    except ValueError:
+        return None
 
-def parse_price(details_data: dict) -> Optional[float]:
-    """Extract price from Steam API data, return 0.0 for free games."""
+
+def parse_price(details_data: dict) -> float | None:
+    """Extract price if available; return None otherwise."""
     price_info = details_data.get("price_overview")
-
     if price_info and "final" in price_info:
-        return price_info["final"] / 100  # cents → dollars
-
+        return price_info["final"] / 100
     if details_data.get("is_free"):
         return 0.0
-
     return None

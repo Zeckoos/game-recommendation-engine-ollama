@@ -3,8 +3,9 @@ import time
 
 from dotenv import load_dotenv
 
+from ...caches.rawg_cache_mapping import LLMCacheMapper
 from ...utils.providers_helpers import parse_rawg_game, resolve_filters
-from ...utils.rawg_metadata_cache import RAWGMetadataCache
+from backend.app.caches.rawg_metadata_cache import RAWGMetadataCache
 import asyncio, os, httpx
 from typing import Any, Optional
 from ...models.game_filter import GameFilter
@@ -70,6 +71,7 @@ class RAWGProvider(GameProvider):
 
     def __init__(self):
         self.metadata_cache: RAWGMetadataCache | None = None
+        self.llm_cache: LLMCacheMapper | None = None
 
     @classmethod
     async def create(cls):
@@ -77,6 +79,7 @@ class RAWGProvider(GameProvider):
         self = cls()
         self.metadata_cache = RAWGMetadataCache()
         await self.metadata_cache.load_or_fetch()  # async pre-fetch
+        self.llm_cache = LLMCacheMapper()
         logger.debug(
             "Provider created with metadata → %d genres, %d platforms, %d tags",
             len(self.metadata_cache.genres),
@@ -99,7 +102,8 @@ class RAWGProvider(GameProvider):
         # Resolve filters with centralized helper
         resolved_ids, still_missing = await resolve_filters(
             self.metadata_cache,
-            {"genres": filters.genres, "platforms": filters.platforms, "tags": filters.tags}
+            {"genres": filters.genres, "platforms": filters.platforms, "tags": filters.tags},
+            self.llm_cache
         )
 
         # Log unresolved filters

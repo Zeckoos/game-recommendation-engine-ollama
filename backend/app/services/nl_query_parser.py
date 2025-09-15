@@ -1,6 +1,7 @@
-from ..utils.nl_parser_helpers import preprocess_constraints, resolve_with_fallback
-from ..utils.rawg_metadata_cache import RAWGMetadataCache
-import subprocess, json, logging, re
+from ..caches.rawg_cache_mapping import LLMCacheMapper
+from ..utils.nl_parser_helpers import preprocess_constraints, resolve_with_llm
+from ..caches.rawg_metadata_cache import RAWGMetadataCache
+import subprocess, json, logging, re, json5
 from datetime import date
 from ..models.game_filter import GameFilter
 
@@ -10,15 +11,48 @@ class NLQueryParser:
     def __init__(self, metadata_cache: RAWGMetadataCache, model: str = "llama3:8b"):
         self.model = model
         self.metadata_cache = metadata_cache
+        self.llm_cache = LLMCacheMapper()
 
     def _run_ollama(self, user_input: str) -> dict:
+        """
+        Run Ollama LLM to extract structured metadata from a free-text game query.
+        Returns a dict with keys: query, genres, platforms, tags.
+        Autocorrects minor JSON formatting errors.
+        """
         safe_input = user_input.replace('"', '\\"')
         prompt = f"""
-    Return only valid JSON with keys: query, genres, platforms, tags.
-    If a field is missing, return [] for lists or "" for query.
+You are a metadata extractor for a game recommendation system.
+Given a user query about video games, return **only valid JSON** with these keys:
+- "query": string, the cleaned query text
+- "genres": list of strings, game genres mentioned
+- "platforms": list of strings, platforms mentioned
+- "tags": list of strings, tags/features mentioned (like multiplayer, co-op, crafting)
 
-    User query: "{safe_input}"
-    """
+If a field is missing in the query, return an empty list or empty string.
+Do not include any text outside the JSON.
+
+Examples:
+Input: "Looking for a multiplayer RPG on PC with crafting and exploration"
+Output:
+{{
+  "query": "multiplayer RPG game with crafting and exploration",
+  "genres": ["RPG"],
+  "platforms": ["PC"],
+  "tags": ["multiplayer", "crafting", "exploration"]
+}}
+
+Input: "Indie co-op farming game on Xbox, price under $50"
+Output:
+{{
+  "query": "Indie co-op farming game",
+  "genres": ["Indie"],
+  "platforms": ["Xbox"],
+  "tags": ["co-op", "farming"]
+}}
+
+Now extract JSON from this user input:
+"{safe_input}"
+"""
 
         try:
             result = subprocess.run(
@@ -30,15 +64,20 @@ class NLQueryParser:
             )
             raw_output = result.stdout.decode("utf-8").strip()
 
-            # Extract JSON block using regex
+            # Extract JSON block
             match = re.search(r"\{.*}", raw_output, re.DOTALL)
-            if match:
-                json_str = match.group(0)
+            json_str = match.group(0) if match else raw_output
+
+            # Try strict JSON first, fallback to JSON5
+            try:
                 return json.loads(json_str)
-            else:
-                logger.warning("No JSON found in Ollama output for query: %s", user_input)
-                logger.debug("Raw output: %s", raw_output)
-                return {"query": user_input, "genres": [], "platforms": [], "tags": []}
+            except json.JSONDecodeError:
+                logger.warning("Strict JSON parsing failed, trying lenient JSON5 for Ollama output")
+                try:
+                    return json5.loads(json_str)
+                except Exception as e2:
+                    logger.warning("Lenient JSON parsing also failed: %s", e2)
+                    return {"query": user_input, "genres": [], "platforms": [], "tags": []}
 
         except subprocess.TimeoutExpired:
             logger.warning("Ollama timed out for query: %s", user_input)
@@ -48,32 +87,22 @@ class NLQueryParser:
             logger.debug("Raw output: %s", raw_output)
             return {"query": user_input, "genres": [], "platforms": [], "tags": []}
 
-    def parse(self, user_input: str) -> tuple[GameFilter, dict]:
+    async def parse(self, user_input: str) -> tuple[GameFilter, dict]:
         """
         Parse a natural-language query into a GameFilter, returning the GameFilter
         and leftover/unresolved metadata.
         """
-        # Step 1. Preprocess numeric/date constraints
         constraints = preprocess_constraints(user_input)
-
-        # Step 2. Use Ollama for query, genres, platforms, tags
         llm_data = self._run_ollama(user_input)
 
-        # Step 3. Resolve against RAWG metadata
-        genres, leftover_genres = resolve_with_fallback(llm_data.get("genres", []), self.metadata_cache, "genres")
-        platforms, leftover_platforms = resolve_with_fallback(llm_data.get("platforms", []), self.metadata_cache, "platforms")
-        tags, leftover_tags = resolve_with_fallback(llm_data.get("tags", []), self.metadata_cache, "tags")
+        # Use helper from nl_parser_helpers
+        genres, _ = await resolve_with_llm(llm_data.get("genres", []), self.metadata_cache, self.llm_cache, "genres")
+        platforms, _ = await resolve_with_llm(llm_data.get("platforms", []), self.metadata_cache, self.llm_cache, "platforms")
+        tags, _ = await resolve_with_llm(llm_data.get("tags", []), self.metadata_cache, self.llm_cache, "tags")
 
-        # Convert leftovers to lists for safe concatenation
-        leftover_genres = list(leftover_genres)
-        leftover_platforms = list(leftover_platforms)
-        leftover_tags = list(leftover_tags)
-
-        # Step 4. Push leftovers into query fallback
-        extra_query = " ".join(leftover_genres + leftover_platforms + leftover_tags)
+        extra_query = " ".join(genres + platforms + tags)
         final_query = " ".join(filter(None, [llm_data.get("query"), extra_query]))
 
-        # Step 5. Construct GameFilter with defaults
         game_filter = GameFilter(
             query=final_query,
             genres=genres,
@@ -85,11 +114,6 @@ class NLQueryParser:
             release_date_to=constraints.get("release_date_to", date.today()),
         )
 
-        # Step 6. Prepare leftover metadata for logging/debugging
-        leftover_metadata = {
-            "genres": leftover_genres,
-            "platforms": leftover_platforms,
-            "tags": leftover_tags,
-        }
+        leftover_metadata = {"genres": [], "platforms": [], "tags": []}
 
         return game_filter, leftover_metadata

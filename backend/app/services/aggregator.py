@@ -4,6 +4,7 @@ from ..models.game_info import GameInfo
 from ..models.provider_response import ProviderResponse
 from .providers.rawg import RAWGProvider
 from .providers.steam import SteamProvider
+from ..utils.aggregator_helpers import normalise_title
 import asyncio, httpx, logging
 
 logger = logging.getLogger(__name__)
@@ -36,15 +37,16 @@ class GameAggregator:
 
         # Step 2: Enrich game info via Steam
         async def enrich_with_steam(game: GameInfo) -> GameInfo:
+            search_term = normalise_title(game.name)
             try:
-                steam_resp: ProviderResponse = await self.steam.search_games(game.name)
+                steam_resp: ProviderResponse = await self.steam.search_games(search_term)
                 if not steam_resp.results:
                     logger.debug("No Steam results found for RAWG game '%s'", game.name)
                     return game
 
                 # Normalise names for fuzzy matching
-                rawg_name = game.name.strip().lower()
-                steam_names = [s.name.strip().lower() for s in steam_resp.results]
+                rawg_name = normalise_title(game.name)
+                steam_names = [normalise_title(s.name) for s in steam_resp.results]
 
                 match_name = get_close_matches(
                     rawg_name,
@@ -58,7 +60,7 @@ class GameAggregator:
                     return game
 
                 steam_game = next(
-                    (s for s in steam_resp.results if s.name.strip().lower() == match_name[0]),
+                    (s for s in steam_resp.results if normalise_title(s.name) == match_name[0]),
                     None
                 )
 
