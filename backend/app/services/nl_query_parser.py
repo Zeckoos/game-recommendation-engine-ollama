@@ -92,19 +92,41 @@ Now extract JSON from this user input:
         Parse a natural-language query into a GameFilter, returning the GameFilter
         and leftover/unresolved metadata.
         """
+        # 1. Extract numeric/date constraints
         constraints = preprocess_constraints(user_input)
+
+        # 2. Get structured metadata from LLM
         llm_data = self._run_ollama(user_input)
 
-        # Use helper from nl_parser_helpers
-        genres, _ = await resolve_with_llm(llm_data.get("genres", []), self.metadata_cache, self.llm_cache, "genres")
-        platforms, _ = await resolve_with_llm(llm_data.get("platforms", []), self.metadata_cache, self.llm_cache, "platforms")
-        tags, _ = await resolve_with_llm(llm_data.get("tags", []), self.metadata_cache, self.llm_cache, "tags")
+        # 3. Resolve genres/platforms/tags against metadata cache and LLM cache
+        genres, leftover_genres = await resolve_with_llm(llm_data.get(
+            "genres", []),
+            self.metadata_cache,
+            self.llm_cache,
+            "genres"
+        )
 
-        extra_query = " ".join(genres + platforms + tags)
-        final_query = " ".join(filter(None, [llm_data.get("query"), extra_query]))
+        platforms, leftover_platforms = await resolve_with_llm(
+            llm_data.get("platforms", []),
+            self.metadata_cache,
+            self.llm_cache,
+            "platforms"
+        )
+
+        tags, leftover_tags = await resolve_with_llm(
+            llm_data.get("tags", []),
+            self.metadata_cache,
+            self.llm_cache,
+            "tags"
+        )
+
+        # Step 4: Merge tags into genres if multiple genres exist
+        if len(genres) > 1:
+            # Only add tags that are not already in genres
+            extra_genres = [t for t in tags if t not in genres]
+            genres.extend(extra_genres)
 
         game_filter = GameFilter(
-            query=final_query,
             genres=genres,
             platforms=platforms,
             tags=tags,
@@ -114,6 +136,10 @@ Now extract JSON from this user input:
             release_date_to=constraints.get("release_date_to", date.today()),
         )
 
-        leftover_metadata = {"genres": [], "platforms": [], "tags": []}
+        leftover_metadata = {
+            "genres": list(leftover_genres),
+            "platforms": list(leftover_platforms),
+            "tags": list(leftover_tags),
+        }
 
         return game_filter, leftover_metadata

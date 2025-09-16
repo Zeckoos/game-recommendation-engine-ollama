@@ -1,6 +1,7 @@
 import re, logging, os, json, subprocess
 from datetime import date
 from difflib import get_close_matches
+from typing import List, Tuple
 
 from ..caches.rawg_cache_mapping import LLMCacheMapper
 from ..caches.rawg_metadata_cache import RAWGMetadataCache
@@ -47,39 +48,45 @@ def preprocess_constraints(user_input: str) -> dict:
 
     return constraints
 
-async def call_llm_for_canonical(category: str, value: str, allowed_values: list[str]) -> dict:
+def filter_constraints_from_values(values: List[str]) -> List[str]:
+    """Remove numeric values, price constraints, or date-related strings."""
+    pattern = re.compile(r"\b(?:under|over|between|less than|more than|\$?\d+|after|since|before|earlier than)\b", re.I)
+    return [v for v in values if not pattern.search(v)]
+
+async def call_llm_for_canonical(category: str, values: List[str], allowed_values: List[str]) -> dict:
     """
-    Map 'value' to a canonical term in 'allowed_values'.
-    Resolution order:
-      1. Exact match (case-insensitive)
-      2. Fuzzy match (difflib)
-      3. LLM canonicalisation as fallback
-    Returns: {"canonical": <canonical_name>}
+    Map multiple 'values' to a canonical term in 'allowed_values'.
+    Returns: {"canonical": <canonical_name>} or None if uncertain
     """
-    val_lower = value.lower()
-    allowed_lower = [v.lower() for v in allowed_values]
+    filtered_values = filter_constraints_from_values(values)
+    if not filtered_values:
+        return {v: None for v in values}
 
-    # 1. Exact match
-    if val_lower in allowed_lower:
-        canonical = allowed_values[allowed_lower.index(val_lower)]
-        return {"canonical": canonical}
+    user_values = json.dumps(values)
+    allowed_values = json.dumps(allowed_values)
 
-    # 2. Fuzzy match
-    match = get_close_matches(val_lower, allowed_lower, n=1, cutoff=0.8)
-    if match:
-        canonical = allowed_values[allowed_lower.index(match[0])]
-        logger.debug("Fuzzy matched '%s' → '%s'", value, canonical)
-        return {"canonical": canonical}
-
-    # 3. LLM fallback
+    # LLM fallback
     prompt = f"""
-    You are a game taxonomy assistant.
-    Category: {category}
-    User input: "{value}"
+    You are a game taxonomy assistant. Your job is to map user input to canonical {category}.
+    Ignore numeric values, price constraints, or dates. Map only valid {category} terms.
+    User input: "{user_values}"
     Allowed values: {allowed_values}
 
-    Return only a JSON object with key "canonical" set to the best matching allowed value.
-    If no match, return the input as canonical.
+    Rules:
+    1. Match each input value to the allowed values as accurately as possible.
+    2. Consider synonyms, abbreviations, and common misspellings.
+    3. If you cannot confidently map a value, return null for it.
+    4. Return **only JSON**: a dict mapping each input value to its canonical value or null.
+
+    Example:
+    Input values: ["first-person shooter", "rpg", "coop"]
+    Allowed: ["FPS", "RPG", "Co-op"]
+    Output:
+    {{
+      "first-person shooter": "FPS",
+      "rpg": "RPG",
+      "coop": "Co-op"
+    }}
     """
 
     try:
@@ -88,60 +95,63 @@ async def call_llm_for_canonical(category: str, value: str, allowed_values: list
             input=prompt.encode("utf-8"),
             capture_output=True,
             check=True,
-            timeout=30
+            timeout=60
         )
         raw_output = result.stdout.decode("utf-8").strip()
         match = re.search(r"\{.*}", raw_output, re.DOTALL)
-        if match:
-            data = json.loads(match.group(0))
-            return {"canonical": data.get("canonical", value)}
+        json_str = match.group(0) if match else raw_output
+        data = json.loads(json_str)
+
+        return {k: v for k, v in data.items()}
+
     except Exception as e:
-        logger.warning("LLM canonicalization failed for '%s': %s", value, e)
+        logger.warning("LLM canonicalisation batch failed for category '%s': %s", category, e)
 
-    # Default fallback
-    return {"canonical": value}
+        return {v: None for v in values}
 
-async def resolve_with_llm(raw_values: list[str], metadata_cache: RAWGMetadataCache,
-                           llm_cache: LLMCacheMapper, category: str):
+async def resolve_with_llm(raw_values: List[str], metadata_cache: RAWGMetadataCache,
+                           llm_cache: LLMCacheMapper, category: str) -> Tuple[List[str], List[str]]:
     """
-    Resolve values using metadata cache and LLM cache mappings.
+    Resolve values using metadata cache and LLM cache mappings, fuzzy matching and LLM fallback.
     Returns (resolved, leftovers)
     """
-    # Build lowercase lookup from metadata cache
-    if category == "genres":
-        source_dict = {name.lower(): name for _, name in metadata_cache.genres}
-    elif category == "platforms":
-        source_dict = {name.lower(): name for _, name in metadata_cache.platforms}
-    else:  # tags
-        source_dict = {name.lower(): name for _, name in metadata_cache.tags}
+    if not raw_values:
+        return [], []
+
+    # Lowercase lookup for exact/fuzzy match
+    source_dict = {name.lower(): name for _, name in getattr(metadata_cache, category)}
 
     resolved, leftovers = [], []
 
+    # 1. Exact/fuzzy/LLM cache match
+    unknown_values = []
+
     for val in raw_values:
         key = val.lower().strip()
-
-        # 1. Check metadata cache
         if key in source_dict:
             resolved.append(source_dict[key])
-            continue
 
-        # 2. Check LLM mapping cache
-        canonical = llm_cache.resolve(category, key)
-        if canonical:
-            resolved.append(canonical)
-            continue
+        elif cached := llm_cache.resolve(category, key):
+            resolved.append(cached)
 
-        # 3. Fuzzy match against metadata cache
-        match = get_close_matches(key, list(source_dict.keys()), n=1, cutoff=0.85)
-        if match:
-            resolved.append(source_dict[match[0]])
-            continue
+        else:
+            match = get_close_matches(key, list(source_dict.keys()), n=1, cutoff=0.85)
+            if match:
+                resolved.append(source_dict[match[0]])
 
-        # 4. Still unresolved → call LLM for canonical mapping
-        result = await call_llm_for_canonical(category, val, list(source_dict.values()))
-        canonical_name = result["canonical"]
-        resolved.append(canonical_name)
-        # Save in LLM cache
-        llm_cache.add_mapping(category, val, canonical_name)
+            else:
+                unknown_values.append(val)
 
-    return tuple(resolved), tuple()
+    # 2. Batch LLM for remaining unknown values
+    if unknown_values:
+        llm_results = await call_llm_for_canonical(category, unknown_values, list(source_dict.values()))
+        for val in unknown_values:
+            canonical = llm_results.get(val)
+            if canonical is None:
+                leftovers.append(val)
+
+            else:
+                resolved.append(canonical)
+                llm_cache.add_mapping(category, val, canonical)
+
+    return resolved, leftovers

@@ -94,7 +94,10 @@ class GameAggregator:
                     game.genres += ("Free To Play",)
 
             except httpx.HTTPError as e:
-                logger.warning("Steam enrichment failed for '%s': %s", game.name, e)
+                logger.warning("Steam enrichment failed for '%s': %s. Returning RAWG data instead.", game.name, e)
+
+            except Exception as e:
+                logger.warning("Unexpected error during Steam enrichment for '%s': %s", game.name, e)
 
             return game
 
@@ -108,4 +111,9 @@ class GameAggregator:
         )
 
         logger.debug("Filtered to %d games after price filter", len(filtered_games))
-        return ProviderResponse(results=filtered_games, total=len(filtered_games))
+        return ProviderResponse.create(
+            results=filtered_games,
+            total=rawg_resp.total,
+            limit=limit,
+            page=page,
+        )

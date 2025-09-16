@@ -134,14 +134,18 @@ class RAWGProvider(GameProvider):
         pages_results = await asyncio.gather(*tasks)
 
         # Flatten results and enforce total_limit
-        all_results = tuple(game for page in pages_results for game in page.results)[:total_limit]
+        all_results = tuple(game for page in pages_results for game in page.results)
 
         # Apply offset slice for partial page
-        start_index = offset % page_size
-        final_results = all_results[start_index: start_index + total_limit]
+        start_index = offset
+        end_index = offset + total_limit
+        final_results = all_results[start_index: end_index]
+
+        # Keep RAWG's total count if available
+        rawg_total = pages_results[0].total if pages_results else 0
 
         logger.debug("Returning %d games after applying offset/limit", len(final_results))
-        return ProviderResponse(results=final_results, total=len(all_results))
+        return ProviderResponse(results=final_results, total=rawg_total)
 
     async def get_game_details(self, game_id: str) -> Optional[GameInfo]:
         """Fetch detailed game info by ID."""
