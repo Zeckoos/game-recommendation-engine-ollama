@@ -1,5 +1,5 @@
 from ..caches.rawg_cache_mapping import LLMCacheMapper
-from ..utils.nl_parser_helpers import preprocess_constraints, resolve_with_llm
+from ..utils.nl_parser_helpers import preprocess_constraints, resolve_with_llm, filter_constraints_from_values
 from ..caches.rawg_metadata_cache import RAWGMetadataCache
 import subprocess, json, logging, re, json5
 from datetime import date
@@ -21,38 +21,54 @@ class NLQueryParser:
         """
         safe_input = user_input.replace('"', '\\"')
         prompt = f"""
-You are a metadata extractor for a game recommendation system.
-Given a user query about video games, return **only valid JSON** with these keys:
-- "query": string, the cleaned query text
-- "genres": list of strings, game genres mentioned
-- "platforms": list of strings, platforms mentioned
-- "tags": list of strings, tags/features mentioned (like multiplayer, co-op, crafting)
-
-If a field is missing in the query, return an empty list or empty string.
-Do not include any text outside the JSON.
-
-Examples:
-Input: "Looking for a multiplayer RPG on PC with crafting and exploration"
-Output:
-{{
-  "query": "multiplayer RPG game with crafting and exploration",
-  "genres": ["RPG"],
-  "platforms": ["PC"],
-  "tags": ["multiplayer", "crafting", "exploration"]
-}}
-
-Input: "Indie co-op farming game on Xbox, price under $50"
-Output:
-{{
-  "query": "Indie co-op farming game",
-  "genres": ["Indie"],
-  "platforms": ["Xbox"],
-  "tags": ["co-op", "farming"]
-}}
-
-Now extract JSON from this user input:
-"{safe_input}"
-"""
+        You are a metadata extraction assistant for a video game recommendation system. 
+        Your task is to extract **structured JSON** from a user's free-text query.
+        
+        Rules:
+        1. Return only **valid JSON** with exactly these keys: 
+           - "query": cleaned query text (can be empty)
+           - "genres": list of genres mentioned (e.g., "RPG", "FPS", "Strategy")
+           - "platforms": list of platforms mentioned (e.g., "PC", "Xbox", "PlayStation")
+           - "tags": list of gameplay tags or features (e.g., "multiplayer", "co-op", "crafting")
+        2. **Do not merge tags into genres**, even if they are similar.
+        3. Ignore numbers, prices, or dates.
+        4. Normalise common genre/platform synonyms where applicable.
+        5. Include custom or new tags as long as they represent valid gameplay features, mechanics, or monetisation aspects.
+        6. Avoid including vague or non-gameplay words in tags (e.g., "good", "fun", "game").
+        7. Return empty lists if a field is missing.
+        8. Output **strict JSON only**, with no extra commentary or formatting.
+        
+        Examples:
+        
+        Input: "Looking for a multiplayer RPG on PC with crafting and exploration"
+        Output:
+        {{
+          "query": "",
+          "genres": ["RPG"],
+          "platforms": ["PC"],
+          "tags": ["multiplayer", "crafting", "exploration"]
+        }}
+        
+        Input: "Indie co-op farming game on Xbox, price under $50"
+        Output:
+        {{
+          "query": "",
+          "genres": ["Indie"],
+          "platforms": ["Xbox"],
+          "tags": ["co-op", "farming"]
+        }}
+        
+        Input: "Free first-person shooter for PlayStation"
+        Output:
+        {{
+          "query": "",
+          "genres": ["FPS"],
+          "platforms": ["PlayStation"],
+          "tags": ["free", "first-person shooter"]
+        }}
+        
+        Now extract JSON from this query: "{safe_input}"
+        """
 
         try:
             result = subprocess.run(
@@ -98,7 +114,7 @@ Now extract JSON from this user input:
         # 2. Get structured metadata from LLM
         llm_data = self._run_ollama(user_input)
 
-        # 3. Resolve genres/platforms/tags against metadata cache and LLM cache
+        # 3. Resolve genres/platforms against metadata cache and LLM cache
         genres, leftover_genres = await resolve_with_llm(llm_data.get(
             "genres", []),
             self.metadata_cache,
@@ -113,18 +129,11 @@ Now extract JSON from this user input:
             "platforms"
         )
 
-        tags, leftover_tags = await resolve_with_llm(
-            llm_data.get("tags", []),
-            self.metadata_cache,
-            self.llm_cache,
-            "tags"
-        )
+        tags = filter_constraints_from_values(llm_data.get("tags", []))
+        leftover_tags = [] # tags are free-form
 
-        # Step 4: Merge tags into genres if multiple genres exist
-        if len(genres) > 1:
-            # Only add tags that are not already in genres
-            extra_genres = [t for t in tags if t not in genres]
-            genres.extend(extra_genres)
+        if constraints.get("max_price") == 0 and "free" not in tags:
+            tags.append("free")
 
         game_filter = GameFilter(
             genres=genres,
@@ -137,9 +146,9 @@ Now extract JSON from this user input:
         )
 
         leftover_metadata = {
-            "genres": list(leftover_genres),
-            "platforms": list(leftover_platforms),
-            "tags": list(leftover_tags),
+            "genres": leftover_genres,
+            "platforms": leftover_platforms,
+            "tags": leftover_tags
         }
 
         return game_filter, leftover_metadata

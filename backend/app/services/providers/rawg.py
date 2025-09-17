@@ -17,6 +17,7 @@ load_dotenv()
 
 RAWG_API_KEY = os.getenv("RAWG_API_KEY")
 BASE_URL = "https://api.rawg.io/api/games"
+DETAILS_CONCURRENCY = 5
 
 logger = logging.getLogger(__name__)
 
@@ -24,54 +25,13 @@ if not RAWG_API_KEY:
     raise RuntimeError("RAWG_API_KEY environment variable is not set.")
 print(f"RAWG_API_KEY: {RAWG_API_KEY}")
 
-async def _fetch_rawg_page(params: dict, metadata_cache: RAWGMetadataCache) -> ProviderResponse:
-    """Fetch a RAWG summary page, then enrich each game with full details using metadata cache."""
-    start_time = time.perf_counter()  # start timer
-
-    async with httpx.AsyncClient() as client:
-        logger.debug("Fetching RAWG page with params: %s", params)
-        resp = await client.get(BASE_URL, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        logger.debug("Fetched page with %d games, total count: %d",
-                     len(data.get("results", [])), data.get("count", 0))
-
-    # Fetch full details concurrently
-    async def fetch_details(game_id: str) -> GameInfo:
-        url = f"{BASE_URL}/{game_id}"
-        async with httpx.AsyncClient() as detail_client:
-            detail_resp = await detail_client.get(url, params={"key": RAWG_API_KEY})
-            detail_resp.raise_for_status()
-            game_info = parse_rawg_game(detail_resp.json(), metadata_cache)
-
-            # Log unresolved IDs per game
-            unknown_genres = [g for g in game_info.genres if g not in metadata_cache.genre_map.values()]
-            unknown_platforms = [p for p in game_info.platforms if p not in metadata_cache.platform_map.values()]
-            unknown_tags = []  # Can be added if you parse tags per game
-            if unknown_genres or unknown_platforms or unknown_tags:
-                logger.warning(
-                    "Game ID %s has unresolved IDs → genres: %s, platforms: %s, tags: %s",
-                    game_id, unknown_genres, unknown_platforms, unknown_tags
-                )
-
-            return game_info
-
-    tasks = [fetch_details(str(game["id"])) for game in data.get("results", [])]
-    results = tuple(await asyncio.gather(*tasks))
-
-    logger.debug("Completed enrichment for %d games", len(results))
-    end_time = time.perf_counter()  # end timer
-    elapsed = end_time - start_time
-    logger.info("Fetched RAWG page in %.3f seconds", elapsed)
-
-    return ProviderResponse(results=results, total=data.get("count", 0))
-
 class RAWGProvider(GameProvider):
     """RAWG API provider with eager pre-fetch metadata and async support."""
 
     def __init__(self):
         self.metadata_cache: RAWGMetadataCache | None = None
         self.llm_cache: LLMCacheMapper | None = None
+        self.client: httpx.AsyncClient | None = None
 
     @classmethod
     async def create(cls):
@@ -80,6 +40,7 @@ class RAWGProvider(GameProvider):
         self.metadata_cache = RAWGMetadataCache()
         await self.metadata_cache.load_or_fetch()  # async pre-fetch
         self.llm_cache = LLMCacheMapper()
+        self.client = httpx.AsyncClient(timeout=15)
         logger.debug(
             "Provider created with metadata → %d genres, %d platforms, %d tags",
             len(self.metadata_cache.genres),
@@ -87,6 +48,55 @@ class RAWGProvider(GameProvider):
             len(self.metadata_cache.tags),
         )
         return self
+
+    async def _fetch_rawg_page(self, params: dict) -> ProviderResponse:
+        """Fetch a RAWG summary page, then enrich each game with full details using metadata cache."""
+        start_time = time.perf_counter()  # start timer
+
+        # Clean out None values
+        params = {k: v for k, v in params.items() if v is not None}
+
+        logger.debug("Fetching RAWG page with params: %s", params)
+        resp = await self.client.get(BASE_URL, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        total = data.get("count", 0)
+        logger.debug("Fetched page with %d games, total count: %d",
+                     len(results), total)
+
+        # Throttled detail fetch
+        sem = asyncio.Semaphore(DETAILS_CONCURRENCY)
+
+        # Fetch full details concurrently
+        async def fetch_details(game_id: str) -> GameInfo:
+            async with sem:
+                url = f"{BASE_URL}/{game_id}"
+                detail_resp = await self.client.get(url, params={"key": RAWG_API_KEY})
+                detail_resp.raise_for_status()
+                game_info = parse_rawg_game(detail_resp.json(), self.metadata_cache)
+
+                # Log unresolved IDs per game
+                unknown_genres = [g for g in game_info.genres if g not in self.metadata_cache.genre_map.values()]
+                unknown_platforms = [p for p in game_info.platforms if p not in self.metadata_cache.platform_map.values()]
+                unknown_tags = []  # Can be added if you parse tags per game
+                if unknown_genres or unknown_platforms or unknown_tags:
+                    logger.warning(
+                        "Game ID %s has unresolved IDs → genres: %s, platforms: %s, tags: %s",
+                        game_id, unknown_genres, unknown_platforms, unknown_tags
+                    )
+
+                return game_info
+
+        tasks = [fetch_details(str(game["id"])) for game in results]
+        detailed_results = tuple(await asyncio.gather(*tasks))
+
+        logger.debug("Completed enrichment for %d games", len(results))
+        end_time = time.perf_counter()  # end timer
+        elapsed = end_time - start_time
+        logger.info("Fetched RAWG page in %.3f seconds", elapsed)
+
+        return ProviderResponse(results=detailed_results, total=total)
 
     async def search_games(self, filters: GameFilter, total_limit: int = 10, offset: int = 0) -> ProviderResponse:
         """
@@ -97,9 +107,8 @@ class RAWGProvider(GameProvider):
         page_size = 20
         start_page = offset // page_size + 1
         end_page = (offset + total_limit + page_size - 1) // page_size
-        tasks = []
 
-        # Resolve filters with centralized helper
+        # Resolve filters with centralised helper
         resolved_ids, still_missing = await resolve_filters(
             self.metadata_cache,
             {"genres": filters.genres, "platforms": filters.platforms, "tags": filters.tags},
@@ -116,12 +125,13 @@ class RAWGProvider(GameProvider):
         tag_ids = resolved_ids["tags"]
 
         # Build query params for each page
+        pages_results = []
         for page in range(start_page, end_page + 1):
             params = {
                 "key": RAWG_API_KEY,
                 "page": page,
                 "page_size": page_size,
-                "search": filters.query or None,
+                "search": None,
                 "dates": f"{filters.release_date_from},{filters.release_date_to}"
                          if filters.release_date_from and filters.release_date_to else None,
                 "platforms": ",".join(map(str, platform_ids)) if platform_ids else None,
@@ -129,9 +139,14 @@ class RAWGProvider(GameProvider):
                 "tags": ",".join(map(str, tag_ids)) if tag_ids else None,
             }
             #logger.debug("RAWG request params (page %d): %s", page, params)
-            tasks.append(_fetch_rawg_page(params, self.metadata_cache))
+            page_response = await self._fetch_rawg_page(params)
+            # Retry without tags if 0 results
+            if page_response.total == 0 and tag_ids:
+                logger.debug("Retrying without tags for page %d", page)
+                params.pop("tags")
+                page_response = await self._fetch_rawg_page(params)
 
-        pages_results = await asyncio.gather(*tasks)
+            pages_results.append(page_response)
 
         # Flatten results and enforce total_limit
         all_results = tuple(game for page in pages_results for game in page.results)

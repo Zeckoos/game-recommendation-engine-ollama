@@ -19,6 +19,10 @@ async def resolve_filters(metadata_cache: RAWGMetadataCache, filters: dict, llm_
     tag_dict = {name.lower(): id for id, name in metadata_cache.tags}
 
     async def resolve_category(category: str, values: list[str], source_dict: dict[str, Any]):
+        # Skip tags entirely
+        if category == "tags":
+            return list(values), list()  # all values preserved, no leftovers
+
         # Use the shared LLM + metadata helper
         resolved_names, leftovers = await resolve_with_llm(values, metadata_cache, llm_cache, category)
         resolved_ids = [source_dict[name.lower()] for name in resolved_names if name.lower() in source_dict]
@@ -64,7 +68,7 @@ def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
 
     release_date = parse_release_date(data.get("released"))
 
-    return GameInfo(
+    game_info = GameInfo(
         id=str(data.get("id")),
         name=data.get("name", "Unknown"),
         description=data.get("description_raw") or data.get("description"),
@@ -78,6 +82,15 @@ def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
         store_url=f"https://rawg.io/games/{data.get('slug')}" if data.get("slug") else None,
     )
 
+    is_free = (
+            data.get("is_free") is True
+            or any(g.lower() == "free to play" for g in game_info.genres)
+            or "free" in (data.get("tags") or [])
+    )
+    if is_free:
+        game_info.price = 0.0
+
+    return game_info
 
 def parse_release_date(raw_date: str | None) -> date | None:
     """Parse RAWG release date string into date object (YYYY-MM-DD)."""

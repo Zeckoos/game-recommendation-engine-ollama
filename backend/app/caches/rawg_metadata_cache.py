@@ -1,10 +1,14 @@
-import httpx, os, logging, json
+from pathlib import Path
 from dotenv import load_dotenv
+import httpx, os, logging, json
 
 load_dotenv()
 RAWG_API_KEY = os.getenv("RAWG_API_KEY")
 BASE_URL = "https://api.rawg.io/api"
-CACHE_FILE = "rawg_metadata_cache.json"
+
+# Use project root relative path, not absolute
+CACHE_DIR = Path(__file__).resolve().parents[1].joinpath('caches')
+CACHE_FILE = CACHE_DIR / "rawg_metadata_cache.json"
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -103,7 +107,7 @@ class RAWGMetadataCache:
     async def save_to_disk(self):
         """Save metadata to JSON cache file."""
         try:
-            temp_file = CACHE_FILE + ".tmp"
+            temp_file = CACHE_FILE.with_suffix(CACHE_FILE.name + ".temp")
             data = {
                 "genres": self.genres,
                 "platforms": self.platforms,

@@ -18,6 +18,10 @@ def preprocess_constraints(user_input: str) -> dict:
     """Extract numeric and date constraints using regex. Returns dict with floats and date objects."""
     constraints = {}
 
+    # --- Free handling ---
+    if re.search(r"\bfree\b", user_input, re.I):
+        constraints["max_price"] = 0.0
+
     # --- Price handling ---
     price_match = re.search(r"(?:under|below|less than)\s*\$?(\d+)", user_input, re.I)
     if price_match:
@@ -51,7 +55,7 @@ def preprocess_constraints(user_input: str) -> dict:
 def filter_constraints_from_values(values: List[str]) -> List[str]:
     """Remove numeric values, price constraints, or date-related strings."""
     pattern = re.compile(r"\b(?:under|over|between|less than|more than|\$?\d+|after|since|before|earlier than)\b", re.I)
-    return [v for v in values if not pattern.search(v)]
+    return [v.strip() for v in values if not pattern.search(v)]
 
 async def call_llm_for_canonical(category: str, values: List[str], allowed_values: List[str]) -> dict:
     """
@@ -62,7 +66,7 @@ async def call_llm_for_canonical(category: str, values: List[str], allowed_value
     if not filtered_values:
         return {v: None for v in values}
 
-    user_values = json.dumps(values)
+    user_values = json.dumps(filtered_values)
     allowed_values = json.dumps(allowed_values)
 
     # LLM fallback

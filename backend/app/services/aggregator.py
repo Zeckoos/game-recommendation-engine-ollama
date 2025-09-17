@@ -105,12 +105,23 @@ class GameAggregator:
 
         # Step 3: Filter by price
         min_price = filters.min_price or 0
-        max_price = filters.max_price or float("inf")
-        filtered_games = tuple(
-            g for g in enriched_games if g.price is None or (min_price <= g.price <= max_price)
-        )
+        max_price = filters.max_price if filters.max_price is not None else float("inf")
+        if max_price == 0.0:
+            # Strict free-only mode
+            filtered_games = tuple(g for g in enriched_games if g.price == 0.0)
+            skipped_unknowns = sum(1 for g in enriched_games if g.price is None)
+            if skipped_unknowns:
+                logger.debug("Excluded %d games with unknown price due to strict free filter",
+                             skipped_unknowns)
+        else:
+            # Normal mode: allow unknown prices (RAWG often doesn't include them)
+            filtered_games = tuple(
+                g for g in enriched_games
+                if g.price is None or (min_price <= g.price <= max_price)
+            )
 
         logger.debug("Filtered to %d games after price filter", len(filtered_games))
+
         return ProviderResponse.create(
             results=filtered_games,
             total=rawg_resp.total,
