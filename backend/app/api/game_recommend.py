@@ -43,8 +43,6 @@ async def recommend(
     try:
         if request_data.filter:
             game_filter: GameFilter = request_data.filter
-            leftovers = {}
-            logger.info("Using provided GameFilter: %s", game_filter.model_dump())
 
         elif request_data.query:
             # Parse natural-language query
@@ -52,7 +50,6 @@ async def recommend(
             game_filter, leftovers = await parser.parse(request_data.query)
 
             logger.info("Original query: '%s'", request_data.query)
-            logger.info("Parsed GameFilter: %s", game_filter.model_dump())
             logger.info("Leftover/unresolved metadata: %s", leftovers)
 
         else:

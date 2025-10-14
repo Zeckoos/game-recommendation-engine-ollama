@@ -14,9 +14,6 @@ cache = RAWGMetadataCache()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- Startup logic ---
-    await cache.load_from_disk()  # prefetch RAWG metadata
-    print("RAWG cache loaded")
-
     # Attach cache to app.state so NLQueryParser can access it
     app.state.rawg_metadata_cache = cache
 
@@ -30,6 +27,15 @@ async def lifespan(app: FastAPI):
     await cache.save_to_disk()
     print("RAWG cache saved on shutdown")
 
+    # --- Close the client ---
+    await app.state.aggregator.close()
+
+    if hasattr(app.state.aggregator, "rawg"):
+        await app.state.aggregator.rawg.close()
+
+    if hasattr(app.state.aggregator, "steam"):
+        await app.state.aggregator.steam.close()
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Game Recommendation Engine", lifespan=lifespan)
 
@@ -38,5 +44,4 @@ def create_app() -> FastAPI:
     app.include_router(recommend_router, prefix="/recommend", tags=["recommend"])
 
     return app
-
 app = create_app()

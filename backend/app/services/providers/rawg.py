@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 if not RAWG_API_KEY:
     raise RuntimeError("RAWG_API_KEY environment variable is not set.")
-print(f"RAWG_API_KEY: {RAWG_API_KEY}")
+#print(f"RAWG_API_KEY: {RAWG_API_KEY}")
 
 class RAWGProvider(GameProvider):
     """RAWG API provider with eager pre-fetch metadata and async support."""
@@ -173,6 +173,10 @@ class RAWGProvider(GameProvider):
         logger.debug("Fetched game details for ID %s", game_id)
         return parse_rawg_game(data, self.metadata_cache)
 
+    async def close(self):
+        if self.client:
+            await self.client.aclose()
+
     async def get_game_price(self, game_id: str, currency: str) -> Any:
         pass
 
@@ -186,7 +190,12 @@ class RAWGProvider(GameProvider):
         pass
 
     async def check_health(self) -> bool:
-        pass
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{BASE_URL}/platforms", params={"key": RAWG_API_KEY, "page_size": 1})
+                return resp.status_code == 200
+        except Exception:
+            return False
 
     async def supports_feature(self, feature: str) -> bool:
         pass

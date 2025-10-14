@@ -19,7 +19,7 @@ class NLQueryParser:
         Returns a dict with keys: query, genres, platforms, tags.
         Autocorrects minor JSON formatting errors.
         """
-        safe_input = user_input.replace('"', '\\"')
+        safe_input = user_input.replace('"', '\\"')[:256]
         prompt = f"""
         You are a metadata extraction assistant for a video game recommendation system. 
         Your task is to extract **structured JSON** from a user's free-text query.
@@ -108,6 +108,8 @@ class NLQueryParser:
         Parse a natural-language query into a GameFilter, returning the GameFilter
         and leftover/unresolved metadata.
         """
+        user_input = user_input.lower()
+
         # 1. Extract numeric/date constraints
         constraints = preprocess_constraints(user_input)
 

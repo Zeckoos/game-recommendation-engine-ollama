@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from .nl_parser_helpers import resolve_with_llm
 from ..models.game_info import GameInfo
@@ -47,8 +47,8 @@ async def resolve_filters(metadata_cache: RAWGMetadataCache, filters: dict, llm_
 
 def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
     """Convert RAWG API game JSON into GameInfo, resolving IDs to names where possible."""
-    genre_dict = {str(id): name for id, name in metadata_cache.genres}
-    platform_dict = {str(id): name for id, name in metadata_cache.platforms}
+    genre_dict = {str(ID): name for ID, name in metadata_cache.genres}
+    platform_dict = {str(ID): name for ID, name in metadata_cache.platforms}
 
     genres = []
     for g in data.get("genres", []):
@@ -56,6 +56,8 @@ def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
             genres.append(g["name"])
         elif isinstance(g, (str, int)):
             genres.append(genre_dict.get(str(g), str(g)))
+        else:
+            continue # skips unknown structures
 
     platforms = []
     for p in data.get("platforms", []):
@@ -63,6 +65,8 @@ def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
             platforms.append(p["platform"]["name"])
         elif isinstance(p, (str, int)):
             platforms.append(platform_dict.get(str(p), str(p)))
+        else:
+            continue
 
     screenshots = tuple(s.get("image") for s in data.get("short_screenshots", []) if s.get("image"))
 
@@ -93,14 +97,22 @@ def parse_rawg_game(data: dict, metadata_cache: RAWGMetadataCache) -> GameInfo:
     return game_info
 
 def parse_release_date(raw_date: str | None) -> date | None:
-    """Parse RAWG release date string into date object (YYYY-MM-DD)."""
+    """Parse various release date formats into a date object."""
     if not raw_date:
         return None
+    # Try ISO format first
     try:
         return date.fromisoformat(raw_date)
     except ValueError:
-        return None
-
+        pass
+    # Try Steam formats
+    for fmt in ("%b %d, %Y", "%d %b, %Y", "%Y-%m-%d", "%Y-%m", "%Y"):
+        try:
+            dt = datetime.strptime(raw_date, fmt)
+            return dt.date()
+        except ValueError:
+            continue
+    return None
 
 def parse_price(details_data: dict) -> float | None:
     """Extract price if available; return None otherwise."""

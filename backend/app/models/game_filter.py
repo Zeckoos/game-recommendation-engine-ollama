@@ -11,7 +11,7 @@ class Currency(str, Enum):
 class GameFilter(BaseModel):
     query: Optional[str] = ""
     min_price: Optional[confloat(ge=0)] = 0.0
-    max_price: Optional[confloat(ge=0)] = float("inf")
+    max_price: Optional[confloat(ge=0)] = 99999.0
     currency: Currency = Currency.USD
 
     platforms: Optional[List[str]] = Field(default_factory=list)

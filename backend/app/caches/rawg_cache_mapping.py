@@ -4,9 +4,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Use project root relative path, not absolute
-CACHE_DIR = Path(__file__).resolve().parents[1].joinpath('caches')
+CACHE_DIR = Path(__file__).resolve().parents[1].joinpath('caches', 'llm_generated_caches')
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = CACHE_DIR / "rawg_llm_mapping.json"
-print(CACHE_FILE)
 
 class LLMCacheMapper:
     _instance = None

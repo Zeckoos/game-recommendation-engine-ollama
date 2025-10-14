@@ -7,6 +7,11 @@ from ...models.provider_response import ProviderResponse
 
 
 class GameProvider(ABC):
+    @classmethod
+    @abstractmethod
+    async def create(cls):
+        """Async factory constructor for provider."""
+        raise NotImplementedError("Async factory not implemented")
     @abstractmethod
     async def search_games(self, filters: GameFilter) -> ProviderResponse:
         """Search games by filters (tags, platforms, price, etc.)"""

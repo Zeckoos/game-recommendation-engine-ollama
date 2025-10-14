@@ -21,7 +21,7 @@ class GameAggregator:
     async def create(cls):
         """Factory method for async initialisation."""
         rawg = await RAWGProvider.create()
-        steam = SteamProvider()
+        steam = await SteamProvider.create()
         return cls(rawg=rawg, steam=steam)
 
     async def aggregate(self, filters: GameFilter, limit: int = 10, page: int = 1) -> ProviderResponse:

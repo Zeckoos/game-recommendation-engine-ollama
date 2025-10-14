@@ -11,6 +11,6 @@ async def search_steam(query: str = Query(..., min_length=1, description="Search
     Temporary endpoint to test Steam search.
     Returns a list of GameInfo objects from Steam.
     """
-    provider = SteamProvider()
+    provider = await SteamProvider.create()
     results = await provider.search_games(query)
     return results
